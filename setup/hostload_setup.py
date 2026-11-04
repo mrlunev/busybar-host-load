@@ -997,6 +997,9 @@ def install(args: argparse.Namespace) -> None:
     state = load_state()
     if os.environ.get("HOSTLOAD_UV_INSTALLED") == "1":
         state["installed_uv"] = True
+        # Right away: if a later step fails, the next run finds uv already there and
+        # would take it for the user's own, so uninstall would never offer to remove it.
+        save_state(state)
 
     step(1, total, "Glances on this computer")
     ours = not (glances_answers() and not state.get("glances"))
