@@ -59,7 +59,11 @@ GLANCES_ARGS = [
     "--disable-plugin", "all",
     "--enable-plugin", "cpu,mem",
 ]
-PYTHON_FOR_GLANCES = "3.12"
+# Glances 4.5 needs Python 3.10 or newer. A Python already on the computer is
+# used when it is in this range, which its dependencies publish wheels for;
+# otherwise uv downloads FALLBACK_PYTHON just for Glances.
+SYSTEM_PYTHON_RANGE = ">=3.10,<3.15"
+FALLBACK_PYTHON = "3.12"
 
 # The bar is always at this address when connected over USB.
 USB_ADDRESS = "10.0.4.20"
@@ -200,16 +204,58 @@ def port_taken() -> bool:
         return s.connect_ex(("127.0.0.1", GLANCES_PORT)) == 0
 
 
+def venv_python() -> Path:
+    return venv_dir() / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
+
+
+def venv_works() -> bool:
+    """False when the environment is missing, or its Python was removed from the computer."""
+    python = venv_python()
+    return python.exists() and run([str(python), "-c", "pass"], check=False).returncode == 0
+
+
+def create_venv(uv: str, use_system: bool) -> bool:
+    """Creates the Glances environment. Returns False if no suitable system Python exists."""
+    shutil.rmtree(venv_dir(), ignore_errors=True)
+    if use_system:
+        command = [uv, "venv", "--quiet", "--python-preference", "only-system",
+                   "--python", SYSTEM_PYTHON_RANGE, str(venv_dir())]
+    else:
+        command = [uv, "venv", "--quiet", "--python-preference", "only-managed",
+                   "--python", FALLBACK_PYTHON, str(venv_dir())]
+    # Not finding a system Python is expected; failing to download one is not.
+    return run(command, check=not use_system).returncode == 0
+
+
+def describe_python() -> str:
+    """Which Python the environment runs on, and whether it was already on this computer."""
+    probe = "import platform, sys; print(platform.python_version()); print(sys.base_prefix)"
+    lines = (run([str(venv_python()), "-c", probe], check=False).stdout or "").split("\n")
+    version, home = lines[0].strip(), (lines[1].strip() if len(lines) > 1 else "")
+    managed = (run([find_uv(), "python", "dir"], check=False).stdout or "").strip()
+    if managed and os.path.normcase(home).startswith(os.path.normcase(managed)):
+        return f"Python {version} downloaded by uv"
+    return f"Python {version} already on this computer"
+
+
 def install_glances(uv: str) -> None:
-    venv = venv_dir()
-    if not venv.exists():
-        note(f"Creating a Python {PYTHON_FOR_GLANCES} environment (uv downloads Python if needed)")
-        run([uv, "venv", "--quiet", "--python", PYTHON_FOR_GLANCES, str(venv)])
-    python = venv / ("Scripts/python.exe" if IS_WINDOWS else "bin/python")
+    if not venv_works() and not create_venv(uv, use_system=True):
+        note(f"No Python 3.10-3.14 on this computer; uv downloads Python {FALLBACK_PYTHON} for Glances")
+        create_venv(uv, use_system=False)
+    note(f"Using {describe_python()}")
+
+    install = [uv, "pip", "install", "--quiet", "--upgrade", "--python", str(venv_python()), GLANCES_SPEC]
     note(f"Installing {GLANCES_SPEC}")
-    run([uv, "pip", "install", "--quiet", "--upgrade", "--python", str(python), GLANCES_SPEC])
-    version = run([str(python), "-m", "glances", "--version"], check=False).stdout or ""
-    ok(version.strip().splitlines()[0] if version.strip() else "Glances installed")
+    if run(install, check=False).returncode != 0:
+        # A system Python can lack something Glances needs; a uv-managed one does not.
+        warn("Glances did not install on that Python; retrying on one downloaded by uv")
+        create_venv(uv, use_system=False)
+        note(f"Using {describe_python()}")
+        run(install)
+
+    output = run([str(venv_python()), "-m", "glances", "--version"], check=False).stdout or ""
+    version = output.strip().splitlines()[0].split()[-1] if output.strip() else ""
+    ok(f"Glances {version} installed" if version else "Glances installed")
 
 
 def stop_glances_service() -> None:
@@ -347,38 +393,74 @@ def wait_for_glances(seconds: int = 45) -> bool:
 # --------------------------------------------------------------------------- firewall
 
 
+def interpreter_programs() -> list[str]:
+    """
+    The executables Windows sees listening. A venv's pythonw.exe only relays to the
+    base interpreter, so the firewall has to know the base one.
+    """
+    probe = "import os, sys; print(os.path.dirname(sys._base_executable))"
+    base = (run([str(venv_python()), "-c", probe], check=False).stdout or "").strip()
+    return [str(Path(base) / exe) for exe in ("pythonw.exe", "python.exe") if base and (Path(base) / exe).exists()]
+
+
+def windows_firewall_script(programs: list[str]) -> str:
+    rule = WINDOWS_FIREWALL_RULE.replace("'", "''")
+    quoted = ", ".join("'" + p.replace("'", "''") + "'" for p in programs)
+    return f"""$ErrorActionPreference = 'Stop'
+$rule = '{rule}'
+Get-NetFirewallRule -DisplayName "$rule*" -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+New-NetFirewallRule -DisplayName $rule -Direction Inbound -Action Allow -Protocol TCP `
+    -LocalPort {GLANCES_PORT} -RemoteAddress LocalSubnet -Profile Any | Out-Null
+$programs = @({quoted})
+# Windows asks 'Allow access?' the first time a program without a rule listens. Dismissing
+# it, or accepting it with only private networks ticked, leaves Block rules for public
+# networks, and a Block rule beats every Allow rule. So the interpreter gets its own Allow
+# rule before Glances first starts, and Block rules left on it by an earlier prompt go.
+foreach ($program in $programs) {{
+    New-NetFirewallRule -DisplayName "$rule - $(Split-Path $program -Leaf)" -Direction Inbound `
+        -Action Allow -Program $program -Protocol TCP -LocalPort {GLANCES_PORT} `
+        -RemoteAddress LocalSubnet -Profile Any | Out-Null
+    Get-NetFirewallApplicationFilter |
+        Where-Object {{ [Environment]::ExpandEnvironmentVariables($_.Program) -eq $program }} |
+        Get-NetFirewallRule |
+        Where-Object {{ $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' }} |
+        Remove-NetFirewallRule
+}}
+"""
+
+
+def run_elevated_powershell(script: str) -> bool:
+    """Runs a PowerShell script as administrator, after the Windows permission prompt."""
+    path = Path(tempfile.mkdtemp()) / "firewall.ps1"
+    path.write_text(script, encoding="utf-8-sig")
+    launcher = (
+        "try { $p = Start-Process powershell -Verb RunAs -Wait -PassThru -WindowStyle Hidden "
+        f"-ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','\"{path}\"'; exit $p.ExitCode }} "
+        "catch { exit 1 }"
+    )
+    return run(["powershell", "-NoProfile", "-Command", launcher], check=False).returncode == 0
+
+
+def windows_rule_exists() -> bool:
+    check = (
+        f"if (Get-NetFirewallRule -DisplayName '{WINDOWS_FIREWALL_RULE}' -ErrorAction SilentlyContinue) "
+        "{ exit 0 } else { exit 1 }"
+    )
+    return run(["powershell", "-NoProfile", "-Command", check], check=False).returncode == 0
+
+
 def open_firewall(state: dict) -> None:
     if IS_WINDOWS:
-        exists = run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={WINDOWS_FIREWALL_RULE}"],
-            check=False,
-        )
-        if exists.returncode == 0:
-            ok("Firewall rule is already in place")
-            return
-        note("Windows asks for permission to let the bar reach Glances on this computer.")
-        note("Allowing it adds one rule: TCP port 61208, from your local network only.")
-        args = (
-            "advfirewall firewall add rule "
-            f'name="{WINDOWS_FIREWALL_RULE}" dir=in action=allow protocol=TCP '
-            f"localport={GLANCES_PORT} remoteip=localsubnet profile=any"
-        )
-        elevated = run(
-            [
-                "powershell", "-NoProfile", "-Command",
-                f"Start-Process netsh -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '{args}'",
-            ],
-            check=False,
-        )
-        if elevated.returncode == 0 and run(
-            ["netsh", "advfirewall", "firewall", "show", "rule", f"name={WINDOWS_FIREWALL_RULE}"],
-            check=False,
-        ).returncode == 0:
+        programs = interpreter_programs()
+        note("Windows asks for permission to let the bar reach Glances on this computer. Allowing it")
+        note(f"adds rules for TCP port {GLANCES_PORT}, from your local network only, for the Python running")
+        note("Glances, and removes earlier Block rules for that Python, which would override them.")
+        if run_elevated_powershell(windows_firewall_script(programs)) and windows_rule_exists():
             state["firewall_rule"] = WINDOWS_FIREWALL_RULE
-            ok("Firewall rule added")
+            ok("Firewall rules added")
         else:
-            warn("The firewall rule was not added. If the bar shows NO GLANCES, run the installer again")
-            warn("and allow the permission prompt, or allow TCP port 61208 in Windows Defender Firewall.")
+            warn("The firewall was not changed. If the bar shows NO GLANCES, run the installer again")
+            warn("and allow the permission prompt.")
         return
 
     if IS_MAC:
@@ -410,14 +492,8 @@ def open_firewall(state: dict) -> None:
 
 def close_firewall(state: dict) -> None:
     if IS_WINDOWS and state.get("firewall_rule"):
-        run(
-            [
-                "powershell", "-NoProfile", "-Command",
-                "Start-Process netsh -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList "
-                f"'advfirewall firewall delete rule name=\"{state['firewall_rule']}\"'",
-            ],
-            check=False,
-        )
+        rule = state["firewall_rule"].replace("'", "''")
+        run_elevated_powershell(f"Get-NetFirewallRule -DisplayName '{rule}*' | Remove-NetFirewallRule")
 
 
 # --------------------------------------------------------------------------- the bar
@@ -639,7 +715,7 @@ def version_tuple(text: str) -> tuple[int, ...]:
 
 
 def check_bar(bar: Bar) -> str:
-    """Checks firmware and Wi-Fi, and returns the bar's address on the Wi-Fi network."""
+    """Checks the firmware, and returns the bar's Wi-Fi address, or "" when it has none."""
     api = bar.json("GET", "/api/version").get("api_semver", "0.0.0")
     firmware = bar.json("GET", "/api/status/firmware").get("version", "?")
     if version_tuple(api) < MIN_API:
@@ -651,28 +727,51 @@ def check_bar(bar: Bar) -> str:
 
     wifi = bar.json("GET", "/api/wifi/status")
     address = (wifi.get("ip_config") or {}).get("address", "")
-    if wifi.get("state") != "connected" or not address:
-        raise SetupError(
-            "The bar is not connected to Wi-Fi. It reads Glances over Wi-Fi, so connect it to the same "
-            "network as this computer (Network tab of its web interface), then run the installer again."
-        )
-    ok(f"Bar is on Wi-Fi \"{wifi.get('ssid', '?')}\" as {address}")
-    return address
+    if wifi.get("state") == "connected" and address:
+        ok(f"Bar is on Wi-Fi \"{wifi.get('ssid', '?')}\" as {address}")
+        return address
+    if bar.over_usb:
+        note("The bar is not on Wi-Fi; it can still read Glances over the USB cable.")
+        return ""
+    raise SetupError("The bar reports no Wi-Fi connection.")
 
 
-def computer_address(bar_wifi_address: str) -> str:
+def address_towards(ip: str) -> str:
     """
-    The address this computer uses to reach the bar's network, which is the one the
-    bar can use to reach back. Asking the routing table is more reliable than
-    listing interfaces: it skips VPNs, Docker bridges and the USB link to the bar.
+    The address this computer uses to reach `ip`, which is the one a device there can
+    use to reach back. Asking the routing table is more reliable than listing
+    interfaces: it skips VPNs, virtual adapters and links that lead elsewhere.
     """
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.connect((bar_wifi_address, 9))
-        mine = sock.getsockname()[0]
-    if mine.split(".")[:3] != bar_wifi_address.split(".")[:3]:
-        warn(f"This computer ({mine}) and the bar ({bar_wifi_address}) look like they are on different networks.")
-        warn("If the bar shows NO GLANCES, put both on the same Wi-Fi (guest networks often isolate devices).")
-    return mine
+        sock.connect((ip, 9))
+        return sock.getsockname()[0]
+
+
+def candidate_addresses(bar: Bar, bar_wifi: str) -> list[tuple[str, str]]:
+    """
+    Addresses the bar might reach this computer on, best first, with the way there.
+    The network comes first when both are on the same one, because it keeps working
+    when the cable is unplugged. A bar plugged in by USB can always reach the
+    computer over the cable, whatever networks the two are on.
+    """
+    lan = address_towards(bar_wifi) if bar_wifi else ""
+    same_network = bool(lan) and lan.split(".")[:3] == bar_wifi.split(".")[:3]
+    usb = address_towards(USB_ADDRESS) if bar.over_usb else ""
+
+    candidates = []
+    if same_network:
+        candidates.append((lan, "network"))
+    elif lan:
+        note(f"This computer ({lan}) and the bar ({bar_wifi}) are on different networks.")
+    if usb:
+        candidates.append((usb, "USB"))
+    if lan and not same_network:
+        candidates.append((lan, "network"))
+    if not candidates:
+        raise SetupError(
+            "The bar cannot reach this computer: connect it with a USB cable, or put both on the same network."
+        )
+    return candidates
 
 
 # --------------------------------------------------------------------------- the app
@@ -776,7 +875,8 @@ def install(args: argparse.Namespace) -> None:
         state["installed_uv"] = True
 
     step(1, total, "Glances on this computer")
-    if glances_answers() and not state.get("glances"):
+    ours = not (glances_answers() and not state.get("glances"))
+    if not ours:
         ok(f"Glances is already running on port {GLANCES_PORT}, using it")
         state["glances"] = "external"
     else:
@@ -788,6 +888,12 @@ def install(args: argparse.Namespace) -> None:
                 "Stop it and run the installer again."
             )
         install_glances(find_uv())
+    save_state(state)
+
+    step(2, total, "Firewall")
+    if ours:
+        # Before Glances first listens, so Windows has a rule for it and asks nothing.
+        open_firewall(state)
         state["service"] = start_glances_service()
         state["glances"] = "ours"
         save_state(state)
@@ -797,33 +903,44 @@ def install(args: argparse.Namespace) -> None:
             ok(f"Glances is running on port {GLANCES_PORT} (no systemd user session: it will not start at login)")
         else:
             ok(f"Glances is running on port {GLANCES_PORT} and starts at login")
-
-    step(2, total, "Firewall")
-    if state.get("glances") == "ours":
-        open_firewall(state)
     else:
         ok("Using your own Glances, firewall left as it is")
-    save_state(state)
 
     step(3, total, "BUSY Bar")
     bar = find_bar(args.bar, state.get("bar"))
     bar_wifi = check_bar(bar)
-    host = computer_address(bar_wifi)
-    state["bar"] = bar.address if not bar.over_usb else bar_wifi
+    candidates = candidate_addresses(bar, bar_wifi)
+    state["bar"] = bar_wifi if bar.over_usb and bar_wifi else bar.address
     save_state(state)
 
     step(4, total, f"{APP_NAME} app")
     install_app(bar, find_package(args.package))
-    configure_app(bar, host)
 
-    step(5, total, "Checking the bar's screen")
-    if launch_app(bar) and verify(bar):
+    step(5, total, "Connecting the bar to this computer")
+    working = None
+    for host, way in candidates:
+        configure_app(bar, host)
+        if not launch_app(bar):
+            break
+        note(f"Waiting for the graphs ({'over the USB cable' if way == 'USB' else 'over the network'})...")
+        if verify(bar):
+            working = (host, way)
+            break
+        warn(f"The bar cannot reach Glances at {host}.")
+
+    if working:
         ok("The graphs are live")
+        if working[1] == "USB":
+            note("The bar reads this computer over the USB cable, so keep it plugged in. To use Wi-Fi")
+            note("instead, put this computer on the bar's Wi-Fi network and run the installer again.")
         print(f"\nDone. {APP_NAME} shows this computer's CPU and RAM on the bar.")
     else:
+        if len(candidates) > 1:
+            configure_app(bar, candidates[0][0])
         warn("The bar does not show the graphs yet. Usual causes:")
         warn("- a firewall on this computer blocks port 61208 (see step 2);")
-        warn("- the bar and this computer are on different networks.")
+        warn("- the bar and this computer are on different networks: connect the bar by USB,")
+        warn("  or put both on the same Wi-Fi.")
         warn("The bar keeps retrying; check its screen in a minute.")
 
     print(

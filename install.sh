@@ -41,6 +41,8 @@ if [ -z "$uv_bin" ]; then
   export HOSTLOAD_UV_INSTALLED=1
 fi
 export HOSTLOAD_UV="$uv_bin"
+# Run on a Python already on this computer when there is one; uv downloads one only if not.
+export UV_PYTHON_PREFERENCE=system
 
 # Use the copy next to this file when there is one, otherwise fetch it.
 here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"

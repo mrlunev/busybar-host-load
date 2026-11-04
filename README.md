@@ -12,11 +12,12 @@ running on your computer, which the bar reads over Wi-Fi.
 
 You need:
 
-- a BUSY Bar on firmware **1.3.1 or newer**, connected to Wi-Fi;
-- a Mac, Windows PC or Linux computer on the **same network** as the bar.
+- a BUSY Bar on firmware **1.3.1 or newer**;
+- a Mac, Windows PC or Linux computer that the bar can reach: either **plugged into it by USB-C**, or
+  on the **same network** as the bar's Wi-Fi.
 
-Connect the bar to the computer with a USB-C cable (optional, but then it is found instantly and no
-password is ever asked), and run the installer.
+Plugging the bar in is the surest way: it is found instantly, no password is asked, and the bar can
+read the computer over the cable even when the two are on different networks. Then run the installer.
 
 **macOS** — open Terminal and paste:
 
@@ -45,15 +46,20 @@ That is all. In a minute the graphs are on the bar.
 
 ### What the installer does
 
-1. Installs [uv](https://docs.astral.sh/uv/) if it is not there yet. uv brings its own Python, so
-   nothing else has to be installed beforehand.
+1. Installs [uv](https://docs.astral.sh/uv/) if it is not there yet. Glances runs on the Python
+   already on your computer when it is version 3.10 to 3.14; only if there is none does uv download
+   Python 3.12 for it, so nothing has to be installed beforehand.
 2. Installs Glances 4 into its own environment and starts it at every login, serving **only CPU and
    memory** on port 61208 — no process list, no disks, no network details.
 3. Opens port 61208 for your local network if the firewall needs it. Windows and macOS (only when its
-   firewall is on) ask for permission first.
+   firewall is on) ask for permission first. On Windows this happens before Glances first starts, so
+   the "Allow access?" prompt never appears; Block rules an earlier prompt left on that Python are
+   removed, because they would override the new rules.
 4. Finds the bar: over USB, then on the network. With several bars around it asks which one.
-5. Installs the Host Load app on the bar, writes this computer's IP address into the app's settings,
-   launches it, and checks the bar's screen to confirm the graphs are coming in.
+5. Installs the Host Load app on the bar, writes this computer's address into the app's settings,
+   launches it, and checks the bar's screen to confirm the graphs are coming in. It tries the network
+   address first when the computer and the bar share a network, and the USB link (`10.0.4.21`) when
+   they do not, or when the first one gives no graphs.
 
 Running it again is safe: it updates Glances and the app and refreshes the address. Do that if your
 computer gets a new IP address.
@@ -64,7 +70,7 @@ What it adds to your computer, and nothing else:
 | --- | --- | --- | --- |
 | Glances and its log | `~/Library/Application Support/busybar-host-load` | `%LOCALAPPDATA%\busybar-host-load` | `~/.local/share/busybar-host-load` |
 | Start at login | `~/Library/LaunchAgents/com.github.mrlunev.busybar-host-load.plist` | Registry: `HKCU\...\Run\BUSY Bar Host Load` | `~/.config/systemd/user/busybar-host-load.service` |
-| Firewall | python allowed, if the firewall is on | Rule "BUSY Bar Host Load (Glances)", TCP 61208, local subnet | Nothing; a hint is printed if `ufw` is installed |
+| Firewall | python allowed, if the firewall is on | Rules "BUSY Bar Host Load (Glances)": TCP 61208, local subnet, for the port and for the Python running Glances | Nothing; a hint is printed if `ufw` is installed |
 
 ## Settings
 
@@ -73,7 +79,7 @@ Open the bar's web interface — `http://10.0.4.20` over USB, or the bar's IP ad
 
 | Setting | What it does |
 | --- | --- |
-| **Computer address** | IP address of the computer running Glances. The installer fills it in. Add `:port` if Glances does not use 61208. |
+| **Computer address** | IP address of the computer running Glances; `10.0.4.21` means "over the USB cable". The installer fills it in. Add `:port` if Glances does not use 61208. |
 | **Update every** | 2, 5, 10 or 30 seconds. The graph holds 36 samples, so this is also how much history you see: from about a minute to 18 minutes. |
 
 Changes apply within ten seconds, without restarting the app. A short press of **Back** on the bar
@@ -87,7 +93,7 @@ only repeat values.
 | The bar shows | What to do |
 | --- | --- |
 | `SET ADDRESS` / `IN SETTINGS` | The app has no computer address. Run the installer, or type the address in the settings. |
-| `NO GLANCES` and an address | The bar cannot reach Glances at that address. Check that the computer is awake and on the same network, that the address is still right (re-run the installer if the IP changed), and that the firewall allows port 61208. The app keeps retrying and recovers by itself. |
+| `NO GLANCES` and an address | The bar cannot reach Glances at that address. Check that the computer is awake, that the address is still right (re-run the installer if the IP changed), and that the firewall allows port 61208. If the computer and the bar are on different networks, plug the bar in by USB and run the installer again: it switches to the cable. The app keeps retrying and recovers by itself. |
 
 The installer stops with a message instead of guessing when the bar is on old firmware, is not on Wi-Fi,
 or is protected with an HTTP API password (it asks for it). To install over Wi-Fi without a cable, HTTP

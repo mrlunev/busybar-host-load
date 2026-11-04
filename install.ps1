@@ -36,6 +36,8 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
         $env:HOSTLOAD_UV_INSTALLED = '1'
     }
     $env:HOSTLOAD_UV = $uv
+    # Run on a Python already on this computer when there is one; uv downloads one only if not.
+    $env:UV_PYTHON_PREFERENCE = 'system'
 
     # Use the copy next to this file when there is one, otherwise fetch it.
     $script = $null
