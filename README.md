@@ -113,7 +113,8 @@ curl -fsSL https://raw.githubusercontent.com/mrlunev/busybar-host-load/main/inst
 ```
 
 It removes the app from the bar, stops Glances, removes the login item, the firewall rule and the data
-folder. uv stays: it is a general-purpose tool, and the uninstaller tells you how to remove it.
+folder. If the installer was the one that installed uv, it offers to remove uv too, with the Python
+versions and cache uv downloaded. A uv you had before stays.
 
 ## Manual setup
 

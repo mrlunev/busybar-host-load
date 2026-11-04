@@ -38,6 +38,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -87,20 +88,124 @@ class SetupError(Exception):
     """A problem the user can fix; printed without a traceback."""
 
 
+def enable_colors() -> bool:
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
+        return False
+    if not IS_WINDOWS:
+        return True
+    # cmd and PowerShell on Windows 10 and later show ANSI colours once the console is asked to.
+    try:
+        import ctypes
+
+        kernel = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))
+    except (AttributeError, OSError):
+        return False
+
+
+COLORS = enable_colors()
+
+
+def paint(code: str, text: str) -> str:
+    return f"\033[{code}m{text}\033[0m" if COLORS else text
+
+
+def bold(text: str) -> str:
+    return paint("1", text)
+
+
+def dim(text: str) -> str:
+    return paint("2", text)
+
+
+def green(text: str) -> str:
+    return paint("32", text)
+
+
+def yellow(text: str) -> str:
+    return paint("33", text)
+
+
+def cyan(text: str) -> str:
+    return paint("36", text)
+
+
+RULE = "-" * 64
+
+
+def banner(title: str, subtitle: str) -> None:
+    print()
+    print(cyan("  " + RULE))
+    print("    " + bold(title))
+    print("    " + dim(subtitle))
+    print(cyan("  " + RULE))
+
+
 def step(n: int, total: int, text: str) -> None:
-    print(f"\n[{n}/{total}] {text}")
+    print(f"\n{cyan(f'[{n}/{total}]')} {bold(text)}")
 
 
 def ok(text: str) -> None:
-    print(f"      ok  {text}")
+    print(f"  {green('ok')}  {text}")
 
 
 def note(text: str) -> None:
-    print(f"          {text}")
+    print(f"      {text}")
 
 
 def warn(text: str) -> None:
-    print(f"      !!  {text}")
+    print(f"  {yellow('!!')}  {text}")
+
+
+class working:
+    """
+    Shows what is going on during a slow operation: a spinner, the text and a
+    stopwatch, on one line that is cleared when the operation ends. Without a
+    terminal (output piped to a file) it prints the text once instead.
+    """
+
+    FRAMES = "|/-\\"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        self.started = 0.0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def seconds(self) -> int:
+        return int(time.time() - self.started)
+
+    def __enter__(self) -> "working":
+        self.started = time.time()
+        if sys.stdout.isatty():
+            self._thread = threading.Thread(target=self._spin, daemon=True)
+            self._thread.start()
+        else:
+            print(f"  ..  {self.text}...", flush=True)
+        return self
+
+    def _spin(self) -> None:
+        frame = 0
+        while True:
+            clock = f"{self.seconds // 60}:{self.seconds % 60:02d}"
+            sys.stdout.write(f"\r  {cyan(self.FRAMES[frame % 4])}   {self.text}...  {dim(clock)} ")
+            sys.stdout.flush()
+            frame += 1
+            if self._stop.wait(0.15):
+                break
+
+    def __exit__(self, *_: object) -> bool:
+        if self._thread:
+            self._stop.set()
+            self._thread.join()
+            sys.stdout.write("\r" + " " * (len(self.text) + 24) + "\r")
+            sys.stdout.flush()
+        return False
 
 
 def interactive() -> bool:
@@ -111,7 +216,7 @@ def ask(question: str, default: str = "") -> str:
     if not interactive():
         return default
     suffix = f" [{default}]" if default else ""
-    answer = input(f"      ?   {question}{suffix}: ").strip()
+    answer = input(f"  {cyan('??')}  {question}{suffix}: ").strip()
     return answer or default
 
 
@@ -239,19 +344,25 @@ def describe_python() -> str:
 
 
 def install_glances(uv: str) -> None:
-    if not venv_works() and not create_venv(uv, use_system=True):
-        note(f"No Python 3.10-3.14 on this computer; uv downloads Python {FALLBACK_PYTHON} for Glances")
-        create_venv(uv, use_system=False)
-    note(f"Using {describe_python()}")
+    if not venv_works():
+        with working("Looking for Python 3.10-3.14 on this computer"):
+            found = create_venv(uv, use_system=True)
+        if not found:
+            note(f"None found, so uv downloads Python {FALLBACK_PYTHON} just for Glances.")
+            with working(f"Downloading Python {FALLBACK_PYTHON}"):
+                create_venv(uv, use_system=False)
+    ok(f"Using {describe_python()}")
 
     install = [uv, "pip", "install", "--quiet", "--upgrade", "--python", str(venv_python()), GLANCES_SPEC]
-    note(f"Installing {GLANCES_SPEC}")
-    if run(install, check=False).returncode != 0:
+    with working("Installing Glances (about a minute the first time)"):
+        installed = run(install, check=False).returncode == 0
+    if not installed:
         # A system Python can lack something Glances needs; a uv-managed one does not.
         warn("Glances did not install on that Python; retrying on one downloaded by uv")
-        create_venv(uv, use_system=False)
-        note(f"Using {describe_python()}")
-        run(install)
+        with working(f"Downloading Python {FALLBACK_PYTHON} and installing Glances"):
+            create_venv(uv, use_system=False)
+            run(install)
+        ok(f"Using {describe_python()}")
 
     output = run([str(venv_python()), "-m", "glances", "--version"], check=False).stdout or ""
     version = output.strip().splitlines()[0].split()[-1] if output.strip() else ""
@@ -267,15 +378,18 @@ def stop_glances_service() -> None:
             run(["systemctl", "--user", "stop", f"{SERVICE_NAME}.service"], check=False)
         run(["pkill", "-f", str(venv_dir())], check=False)
     elif IS_WINDOWS:
+        # The venv's pythonw.exe only relays to the base interpreter, whose command line
+        # does not mention the venv, so the relay's children are stopped along with it.
         venv = str(venv_dir()).replace("'", "''")
-        run(
-            [
-                "powershell", "-NoProfile", "-Command",
-                "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like "
-                f"'*{venv}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}",
-            ],
-            check=False,
+        script = (
+            "$all = Get-CimInstance Win32_Process; "
+            # This PowerShell's own command line names the venv too; it must not stop itself.
+            f"$ours = @($all | Where-Object {{ $_.ProcessId -ne $PID -and $_.CommandLine -like '*{venv}*' }}); "
+            "$ids = @($ours | ForEach-Object { $_.ProcessId }); "
+            "$kids = @($all | Where-Object { $ids -contains $_.ParentProcessId }); "
+            "($kids + $ours) | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
         )
+        run(["powershell", "-NoProfile", "-Command", script], check=False)
 
 
 def start_glances_service() -> str:
@@ -455,7 +569,9 @@ def open_firewall(state: dict) -> None:
         note("Windows asks for permission to let the bar reach Glances on this computer. Allowing it")
         note(f"adds rules for TCP port {GLANCES_PORT}, from your local network only, for the Python running")
         note("Glances, and removes earlier Block rules for that Python, which would override them.")
-        if run_elevated_powershell(windows_firewall_script(programs)) and windows_rule_exists():
+        with working("Waiting for you to answer the Windows permission prompt"):
+            changed = run_elevated_powershell(windows_firewall_script(programs))
+        if changed and windows_rule_exists():
             state["firewall_rule"] = WINDOWS_FIREWALL_RULE
             ok("Firewall rules added")
         else:
@@ -472,10 +588,11 @@ def open_firewall(state: dict) -> None:
         python = os.path.realpath(venv_dir() / "bin" / "python")
         note("The macOS firewall is on. Allowing Glances to accept connections needs your password.")
         script = f"{tool} --add '{python}' && {tool} --unblockapp '{python}'"
-        allowed = run(
-            ["osascript", "-e", f'do shell script "{script}" with administrator privileges'],
-            check=False,
-        )
+        with working("Waiting for your password in the macOS dialog"):
+            allowed = run(
+                ["osascript", "-e", f'do shell script "{script}" with administrator privileges'],
+                check=False,
+            )
         if allowed.returncode == 0:
             ok("Glances is allowed through the macOS firewall")
         else:
@@ -493,7 +610,9 @@ def open_firewall(state: dict) -> None:
 def close_firewall(state: dict) -> None:
     if IS_WINDOWS and state.get("firewall_rule"):
         rule = state["firewall_rule"].replace("'", "''")
-        run_elevated_powershell(f"Get-NetFirewallRule -DisplayName '{rule}*' | Remove-NetFirewallRule")
+        note("Windows asks for permission to remove the firewall rules the installer added.")
+        with working("Waiting for you to answer the Windows permission prompt"):
+            run_elevated_powershell(f"Get-NetFirewallRule -DisplayName '{rule}*' | Remove-NetFirewallRule")
 
 
 # --------------------------------------------------------------------------- the bar
@@ -671,8 +790,8 @@ def find_bar(requested: str | None, remembered: str | None) -> Bar:
         ok("Found a bar connected over USB")
         return Bar(USB_ADDRESS, "USB")
 
-    note("No bar on USB. Looking for bars on the network...")
-    bars = [Bar(ip, name) for name, ip in discover_bars()]
+    with working("No bar on USB. Looking for bars on the network"):
+        bars = [Bar(ip, name) for name, ip in discover_bars()]
     if remembered and remembered != USB_ADDRESS and all(b.address != remembered for b in bars):
         if probe(remembered):
             bars.append(Bar(remembered, "used last time"))
@@ -723,7 +842,10 @@ def check_bar(bar: Bar) -> str:
             f"The bar runs firmware {firmware} (API {api}). Host Load needs firmware 1.3.1 or newer: "
             "update it in the Firmware tab of the bar's web interface, then run the installer again."
         )
-    ok(f"Firmware {firmware}, API {api}")
+    name = bar.json("GET", "/api/name").get("name", "")
+    if name:
+        bar.name = name
+    ok(f"{bar.name or 'BUSY Bar'}: firmware {firmware}, API {api}")
 
     wifi = bar.json("GET", "/api/wifi/status")
     address = (wifi.get("ip_config") or {}).get("address", "")
@@ -791,10 +913,10 @@ def find_package(requested: str | None) -> Path:
             note(f"Using the package at {candidate.relative_to(here.parent)}")
             return candidate
 
-    note("Downloading the latest release from GitHub")
     target = Path(tempfile.mkdtemp()) / f"{APP_ID}.tgz"
     try:
-        urllib.request.urlretrieve(PACKAGE_URL, target)
+        with working(f"Downloading {APP_NAME} from GitHub"):
+            urllib.request.urlretrieve(PACKAGE_URL, target)
     except OSError as error:
         raise SetupError(f"Could not download {PACKAGE_URL} ({error}).") from None
     return target
@@ -802,7 +924,8 @@ def find_package(requested: str | None) -> Path:
 
 def install_app(bar: Bar, package: Path) -> None:
     try:
-        raw = bar.request("POST", "/api/apps/stage", package.read_bytes(), "application/octet-stream", timeout=60)
+        with working(f"Uploading {APP_NAME} to the bar"):
+            raw = bar.request("POST", "/api/apps/stage", package.read_bytes(), "application/octet-stream", timeout=60)
         staged = json.loads(raw.decode())
     except BarError as error:
         if error.status == 409:
@@ -811,7 +934,8 @@ def install_app(bar: Bar, package: Path) -> None:
     key = staged.get("install_key")
     if key is None:
         raise SetupError(f"The bar did not accept the package: {staged}")
-    bar.request("POST", f"/api/apps/install?install_key={key}", timeout=60)
+    with working(f"Installing {APP_NAME} on the bar"):
+        bar.request("POST", f"/api/apps/install?install_key={key}", timeout=60)
     previous = (staged.get("installed") or {}).get("version")
     version = (staged.get("staged") or {}).get("version", "?")
     ok(f"{APP_NAME} {version} installed" + (f" (replaced {previous})" if previous else ""))
@@ -894,10 +1018,12 @@ def install(args: argparse.Namespace) -> None:
     if ours:
         # Before Glances first listens, so Windows has a rule for it and asks nothing.
         open_firewall(state)
-        state["service"] = start_glances_service()
-        state["glances"] = "ours"
-        save_state(state)
-        if not wait_for_glances():
+        with working("Starting Glances"):
+            state["service"] = start_glances_service()
+            state["glances"] = "ours"
+            save_state(state)
+            started = wait_for_glances()
+        if not started:
             raise SetupError(f"Glances did not start. See {data_dir() / 'glances.log'}")
         if state["service"] == "manual":
             ok(f"Glances is running on port {GLANCES_PORT} (no systemd user session: it will not start at login)")
@@ -917,23 +1043,24 @@ def install(args: argparse.Namespace) -> None:
     install_app(bar, find_package(args.package))
 
     step(5, total, "Connecting the bar to this computer")
-    working = None
+    connected: tuple[str, str] | None = None
     for host, way in candidates:
         configure_app(bar, host)
         if not launch_app(bar):
             break
-        note(f"Waiting for the graphs ({'over the USB cable' if way == 'USB' else 'over the network'})...")
-        if verify(bar):
-            working = (host, way)
+        route = "over the USB cable" if way == "USB" else "over the network"
+        with working(f"Waiting for the graphs on the bar's screen ({route})"):
+            shown = verify(bar)
+        if shown:
+            connected = (host, way)
             break
         warn(f"The bar cannot reach Glances at {host}.")
 
-    if working:
+    if connected:
         ok("The graphs are live")
-        if working[1] == "USB":
+        if connected[1] == "USB":
             note("The bar reads this computer over the USB cable, so keep it plugged in. To use Wi-Fi")
             note("instead, put this computer on the bar's Wi-Fi network and run the installer again.")
-        print(f"\nDone. {APP_NAME} shows this computer's CPU and RAM on the bar.")
     else:
         if len(candidates) > 1:
             configure_app(bar, candidates[0][0])
@@ -943,14 +1070,26 @@ def install(args: argparse.Namespace) -> None:
         warn("  or put both on the same Wi-Fi.")
         warn("The bar keeps retrying; check its screen in a minute.")
 
-    print(
-        "\nSettings live in the bar's web interface: Apps > Host Load."
-        "\nIf this computer's IP address changes, run the installer again."
-        "\nTo remove everything, run the uninstaller (see README)."
-    )
+    uninstaller = "setup\\Uninstall-Windows.bat" if IS_WINDOWS else "setup/Uninstall-macOS.command" if IS_MAC else "./install.sh --uninstall"
+    print()
+    print(cyan("  " + RULE))
+    if connected:
+        print("    " + bold(f"Done! {bar.name or 'Your BUSY Bar'} now shows this computer's CPU and RAM."))
+    else:
+        print("    " + bold(f"{APP_NAME} is installed, but the bar does not show the graphs yet."))
+    print()
+    print(f"    {dim('Settings ')}  the bar's web interface > Apps > Host Load")
+    print(f"    {dim('IP change')}  run this installer again")
+    print(f"    {dim('Uninstall')}  {uninstaller}, or the installer with --uninstall")
+    print(cyan("  " + RULE))
 
 
-def uninstall(args: argparse.Namespace) -> None:
+# The launcher removes uv after this script exits when it returns this code: uv
+# cannot delete itself while it is running the script.
+REMOVE_UV_EXIT = 10
+
+
+def uninstall(args: argparse.Namespace) -> int:
     state = load_state()
 
     step(1, 3, f"{APP_NAME} on the bar")
@@ -972,19 +1111,33 @@ def uninstall(args: argparse.Namespace) -> None:
     if state.get("glances") == "external":
         ok("Your own Glances was used; left untouched")
     else:
-        remove_glances_service()
-        close_firewall(state)
+        with working("Stopping Glances"):
+            remove_glances_service()
         ok("Stopped Glances and removed it from login items")
+        close_firewall(state)
+        if state.get("firewall_rule"):
+            ok("Removed the firewall rules")
 
     step(3, 3, "Files")
-    uv_installed = state.get("installed_uv")
-    shutil.rmtree(data_dir(), ignore_errors=True)
-    ok(f"Removed {data_dir()}")
-    if uv_installed:
-        note("uv was installed along with Host Load. Keep it, or remove it as described at")
-        note("https://docs.astral.sh/uv/getting-started/installation/#uninstallation")
+    # Windows releases the files of a process a moment after it is stopped.
+    for _ in range(10):
+        shutil.rmtree(data_dir(), ignore_errors=True)
+        if not data_dir().exists():
+            break
+        time.sleep(1)
+    if data_dir().exists():
+        warn(f"Could not remove everything in {data_dir()}; delete it by hand after a restart.")
+    else:
+        ok(f"Removed {data_dir()}")
+    remove_uv = bool(state.get("installed_uv")) and confirm(
+        "uv was installed along with Host Load. Remove it too?", default=True
+    )
 
-    print(f"\n{APP_NAME} is uninstalled.")
+    print()
+    print(cyan("  " + RULE))
+    print("    " + bold(f"{APP_NAME} is uninstalled."))
+    print(cyan("  " + RULE))
+    return REMOVE_UV_EXIT if remove_uv else 0
 
 
 def main() -> int:
@@ -994,14 +1147,18 @@ def main() -> int:
     parser.add_argument("--package", help="app package (.tgz) to install instead of the latest release")
     args = parser.parse_args()
 
-    print(f"BUSY Bar {APP_NAME} {args.action}er")
+    if args.action == "install":
+        banner(f"{APP_NAME} for BUSY Bar", "Live CPU and RAM graphs of this computer on your BUSY Bar")
+    else:
+        banner(f"{APP_NAME} for BUSY Bar", "Removing everything the installer added")
     try:
         if args.action == "install":
             install(args)
         else:
-            uninstall(args)
+            return uninstall(args)
     except SetupError as error:
-        print(f"\n      !!  {error}")
+        print()
+        warn(str(error))
         return 1
     except KeyboardInterrupt:
         print("\nCancelled.")
