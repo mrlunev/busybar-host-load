@@ -1,0 +1,9 @@
+{
+  "format_version": 1,
+  "id": "app.mrlunev.hostload",
+  "name": "Host Load",
+  "version": "1.0.0",
+  "api_version": "27.12.0",
+  "description": "Live CPU and RAM graphs of your computer, read from Glances over Wi-Fi",
+  "author": "mrlunev"
+}

@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "version": 2,
+  "fields": {
+    "host": {
+      "type": "string",
+      "label": "Computer address",
+      "description": "IP address of the computer running Glances, e.g. 192.168.1.10. Add :port if Glances does not use 61208. The installer fills this in for you.",
+      "default": "",
+      "max_length": 64
+    },
+    "refresh": {
+      "type": "enum",
+      "label": "Update every",
+      "description": "Time between samples. Each sample is one column, and the graph holds 36 of them.",
+      "default": "2",
+      "options": [
+        { "value": "2", "label": "2 seconds (graph shows ~1 min)" },
+        { "value": "5", "label": "5 seconds (graph shows 3 min)" },
+        { "value": "10", "label": "10 seconds (graph shows 6 min)" },
+        { "value": "30", "label": "30 seconds (graph shows 18 min)" }
+      ]
+    }
+  }
+}
