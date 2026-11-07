@@ -20,6 +20,15 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
 
     function Say([string]$text) { Write-Host "  $text" }
 
+    # Windows PowerShell 5.1 turns each line a native program writes to a
+    # redirected stderr into an error record, and 'Stop' above makes the first
+    # one fatal. uv reports ordinary things there ("No interpreter found",
+    # "Clearing cache"), so its quiet calls run with 'Continue'.
+    function Invoke-Native([scriptblock]$block) {
+        $ErrorActionPreference = 'Continue'
+        & $block 2>$null
+    }
+
     function Find-Uv {
         $cmd = Get-Command uv -ErrorAction SilentlyContinue
         if ($cmd) { return $cmd.Source }
@@ -31,8 +40,8 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
 
     function Remove-Uv([string]$uv) {
         Say 'Removing uv...'
-        $dirs = @((& $uv python dir 2>$null), (& $uv tool dir 2>$null), (& $uv cache dir 2>$null))
-        & $uv cache clean *> $null
+        $dirs = @((Invoke-Native { & $uv python dir }), (Invoke-Native { & $uv tool dir }), (Invoke-Native { & $uv cache dir }))
+        Invoke-Native { & $uv cache clean } | Out-Null
         # Only uv's own folders, never anything that does not say so.
         foreach ($dir in $dirs) {
             if ($dir -and $dir -match 'uv') { Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue }
@@ -70,7 +79,7 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
     # Run on a Python already on this computer when there is one; uv downloads one only if not.
     $env:UV_PYTHON_PREFERENCE = 'system'
 
-    & $uv python find '>=3.9' *> $null
+    Invoke-Native { & $uv python find '>=3.9' } | Out-Null
     if ($LASTEXITCODE -ne 0) {
         Say 'No Python on this computer yet; downloading one for the installer...'
         & $uv python install 3.12

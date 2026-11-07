@@ -25,6 +25,9 @@ const REQUEST_TIMEOUT_MS = 4000;
  */
 const SETTINGS_REFRESH_MS = 10000;
 
+/** Consecutive failed polls before the graph is dropped and NO GLANCES shown. */
+const GIVE_UP_AFTER = 3;
+
 /** Retries back off after failures, but never wait longer than this between tries. */
 const MAX_RETRY_MS = 15000;
 
@@ -120,7 +123,11 @@ function main(): void {
       } catch (err) {
         if (failures === 0) report("glances", err);
         failures += 1;
-        // A gap in the data is shown as a fresh start, not stitched over.
+        // A dropped poll or two leaves the graph as it is: at the slow settings
+        // it holds many minutes, too much to lose to one lost packet.
+        // With nothing drawn yet there is nothing to keep, so say so at once.
+        if (failures < GIVE_UP_AFTER && cpuHistory.length > 0) return;
+        // Glances is really gone: the gap is shown as a fresh start, not stitched over.
         resetHistory();
         await show(messageFrame("NO GLANCES", config.host));
         // A wrong address is the usual cause, so pick up corrected settings on the next try.

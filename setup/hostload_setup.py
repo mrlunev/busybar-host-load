@@ -15,8 +15,10 @@ What `install` does:
    the app's settings and launches it.
 5. Checks the bar's screen to confirm the graphs are coming in.
 
-`uninstall` reverses all of it. Nothing outside the app's own data folder, the
-login item and (on Windows) one firewall rule is touched.
+`uninstall` reverses all of it: the app, Glances and its data folder, the login
+item, and the firewall changes the installer made (on Windows its rules, which
+replace earlier Block rules for that Python; on macOS the exception for the
+Python running Glances, unless the user had added it before).
 
 Run through the `install.sh` / `install.ps1` launchers, which bring `uv`. Only
 the Python standard library is used, so the script also runs on its own:
@@ -32,6 +34,7 @@ import getpass
 import json
 import os
 import plistlib
+import shlex
 import shutil
 import socket
 import struct
@@ -586,14 +589,15 @@ def open_firewall(state: dict) -> None:
             ok("macOS firewall is off, nothing to open")
             return
         python = os.path.realpath(venv_dir() / "bin" / "python")
+        # An exception the user already had stays theirs: uninstall removes only one added here.
+        listed = python in (run([tool, "--listapps"], check=False).stdout or "")
         note("The macOS firewall is on. Allowing Glances to accept connections needs your password.")
-        script = f"{tool} --add '{python}' && {tool} --unblockapp '{python}'"
+        script = f"{tool} --add {shlex.quote(python)} && {tool} --unblockapp {shlex.quote(python)}"
         with working("Waiting for your password in the macOS dialog"):
-            allowed = run(
-                ["osascript", "-e", f'do shell script "{script}" with administrator privileges'],
-                check=False,
-            )
+            allowed = run_as_admin_mac(script)
         if allowed.returncode == 0:
+            if not listed:
+                state["mac_firewall_app"] = python
             ok("Glances is allowed through the macOS firewall")
         else:
             warn("Glances was not added to the firewall. If the bar shows NO GLANCES, open")
@@ -607,7 +611,25 @@ def open_firewall(state: dict) -> None:
         ok("No firewall changes needed")
 
 
+def run_as_admin_mac(script: str) -> subprocess.CompletedProcess:
+    """Runs a shell command as root after macOS asks for the password. The command
+    sits inside an AppleScript string, so its backslashes and quotes are escaped."""
+    quoted = script.replace("\\", "\\\\").replace('"', '\\"')
+    return run(["osascript", "-e", f'do shell script "{quoted}" with administrator privileges'], check=False)
+
+
 def close_firewall(state: dict) -> None:
+    if IS_MAC and state.get("mac_firewall_app"):
+        tool = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+        note("macOS asks for your password to remove the firewall exception the installer added.")
+        with working("Waiting for your password in the macOS dialog"):
+            removed = run_as_admin_mac(f"{tool} --remove {shlex.quote(state['mac_firewall_app'])}")
+        if removed.returncode == 0:
+            ok("Firewall exception removed")
+        else:
+            warn("The firewall exception was not removed. Remove python in System Settings > Network >")
+            warn("Firewall > Options if you like.")
+        return
     if IS_WINDOWS and state.get("firewall_rule"):
         rule = state["firewall_rule"].replace("'", "''")
         note("Windows asks for permission to remove the firewall rules the installer added.")
@@ -1002,7 +1024,9 @@ def install(args: argparse.Namespace) -> None:
         save_state(state)
 
     step(1, total, "Glances on this computer")
-    ours = not (glances_answers() and not state.get("glances"))
+    # Ours if an earlier run installed it, or if nothing answers yet. A Glances the
+    # user runs themselves stays theirs on every later run, not just the first.
+    ours = state.get("glances") == "ours" or not glances_answers()
     if not ours:
         ok(f"Glances is already running on port {GLANCES_PORT}, using it")
         state["glances"] = "external"

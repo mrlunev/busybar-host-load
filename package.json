@@ -1,7 +1,7 @@
 {
   "name": "busybar-host-load",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "BUSY Bar app: live CPU and RAM graphs of your computer, read from Glances over Wi-Fi",
   "author": "mrlunev",
   "type": "module",
