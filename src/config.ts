@@ -9,9 +9,9 @@ import { loadValues } from "@shared/settings";
 /** Port `glances -w` listens on unless told otherwise. */
 export const DEFAULT_PORT = 61208;
 
-/** Glances refreshes its REST API about every two seconds; sampling faster only repeats values. */
+/** The installer runs Glances without its API and CPU caches, so it answers fresh values down to 0.5 s. */
 const DEFAULT_REFRESH_S = 2;
-const REFRESH_CHOICES = [2, 5, 10, 30];
+const REFRESH_CHOICES = [0.5, 1, 2, 5, 10, 30];
 
 export interface Config {
   /** Host name or IP of the computer, empty until configured. */
@@ -49,7 +49,7 @@ export function parseAddress(raw: string): { host: string; port: number } {
 }
 
 function parseRefresh(value: unknown): number {
-  const seconds = typeof value === "string" ? parseInt(value, 10) : Number(value);
+  const seconds = typeof value === "string" ? parseFloat(value) : Number(value);
   return REFRESH_CHOICES.indexOf(seconds) >= 0 ? seconds : DEFAULT_REFRESH_S;
 }
 

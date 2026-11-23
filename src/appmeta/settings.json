@@ -15,6 +15,8 @@
       "description": "Time between samples. Each sample is one column, and the graph holds 36 of them.",
       "default": "2",
       "options": [
+        { "value": "0.5", "label": "0.5 seconds (graph shows 18 s)" },
+        { "value": "1", "label": "1 second (graph shows 36 s)" },
         { "value": "2", "label": "2 seconds (graph shows ~1 min)" },
         { "value": "5", "label": "5 seconds (graph shows 3 min)" },
         { "value": "10", "label": "10 seconds (graph shows 6 min)" },

@@ -13,6 +13,9 @@ set -euo pipefail
 RAW_BASE="https://raw.githubusercontent.com/mrlunev/busybar-host-load/main"
 # setup/hostload_setup.py exits with this code when uv should go too.
 REMOVE_UV_EXIT=10
+# Oldest uv with everything the installer uses (remote scripts, --exclude-newer,
+# a separate folder for downloaded Pythons).
+MIN_UV="0.5.0"
 
 action="install"
 args=()
@@ -27,10 +30,18 @@ say() { printf '  %s\n' "$*"; }
 
 find_uv() {
   if command -v uv >/dev/null 2>&1; then command -v uv; return 0; fi
-  for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
+  # Where uv's own installer puts it: UV_INSTALL_DIR, XDG_BIN_HOME, ~/.local/bin, ~/.cargo/bin.
+  for candidate in "${UV_INSTALL_DIR:-/nonexistent}/uv" "${XDG_BIN_HOME:-/nonexistent}/uv" \
+                   "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
     if [ -x "$candidate" ]; then echo "$candidate"; return 0; fi
   done
   return 1
+}
+
+uv_too_old() {
+  version="$("$1" --version 2>/dev/null | awk '{print $2}')"
+  [ -z "$version" ] && return 0
+  [ "$(printf '%s\n%s\n' "$MIN_UV" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | head -n1)" != "$MIN_UV" ]
 }
 
 remove_uv() {
@@ -59,25 +70,47 @@ if [ -z "$uv_bin" ]; then
   say "uv is ready."
   export HOSTLOAD_UV_INSTALLED=1
 fi
+if uv_too_old "$uv_bin"; then
+  say "The uv on this computer is older than $MIN_UV; updating it..."
+  "$uv_bin" self update >/dev/null 2>&1 || true
+  if uv_too_old "$uv_bin"; then
+    say "Could not update uv at $uv_bin. Update it the way it was installed (for example"
+    say "'brew upgrade uv' or 'pipx upgrade uv'), then run this installer again."
+    exit 1
+  fi
+fi
 export HOSTLOAD_UV="$uv_bin"
-# Run on a Python already on this computer when there is one; uv downloads one only if not.
+# The installer itself runs on a Python already on this computer when there is one;
+# uv downloads one only if not. (Glances gets a Python of its own either way.)
 export UV_PYTHON_PREFERENCE=system
+# On a Mac without the command line developer tools, /usr/bin/python3 is a stub
+# that opens an "install the tools" dialog when run: use a downloaded Python.
+if [ "$(uname -s)" = "Darwin" ] && ! xcode-select -p >/dev/null 2>&1; then
+  export UV_PYTHON_PREFERENCE=only-managed
+fi
 
-if ! "$uv_bin" python find '>=3.9' >/dev/null 2>&1; then
+if ! "$uv_bin" python find '>=3.9' >/dev/null 2>&1 || [ "$UV_PYTHON_PREFERENCE" = "only-managed" ]; then
   say "No Python on this computer yet; downloading one for the installer..."
   "$uv_bin" python install 3.12
 fi
 
-# Use the copy next to this file when there is one, otherwise fetch it.
-here="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd || echo "")"
-script="$here/setup/hostload_setup.py"
-if [ -z "$here" ] || [ ! -f "$script" ]; then
-  script="$RAW_BASE/setup/hostload_setup.py"
+# Run as a file, use the copy next to it; piped from curl, fetch it, whatever
+# folder the terminal is in (an old checkout there must not run instead).
+script="$RAW_BASE/setup/hostload_setup.py"
+source_file="${BASH_SOURCE[0]:-}"
+if [ -n "$source_file" ] && [ -f "$source_file" ]; then
+  here="$(cd "$(dirname "$source_file")" && pwd)"
+  if [ -f "$here/setup/hostload_setup.py" ]; then script="$here/setup/hostload_setup.py"; fi
 fi
 
 # Piped from curl, stdin is this script itself; questions must read the terminal.
+# Without one (an agent, CI, cron) /dev/tty exists but cannot be opened, and the
+# installer runs on its defaults.
 input=/dev/stdin
-if [ ! -t 0 ] && [ -r /dev/tty ]; then input=/dev/tty; fi
+if [ ! -t 0 ]; then
+  input=/dev/null
+  if (exec </dev/tty) 2>/dev/null; then input=/dev/tty; fi
+fi
 
 set +e
 "$uv_bin" run --quiet --no-project "$script" "$action" ${args[@]+"${args[@]}"} <"$input"

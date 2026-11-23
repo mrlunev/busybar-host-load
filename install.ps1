@@ -7,16 +7,25 @@
 # All it does itself is make sure uv (https://docs.astral.sh/uv/) is available; uv
 # then runs setup\hostload_setup.py with a Python it finds or fetches, so nothing
 # else has to be installed beforehand.
-param([switch]$Uninstall)
+param(
+    [switch]$Uninstall,
+    # Passed on to setup\hostload_setup.py: --bar ADDRESS, --package FILE, --no-firewall.
+    [Parameter(ValueFromRemainingArguments = $true)][string[]]$SetupArgs
+)
 
 # Not called in an assignment: PowerShell would then capture everything the
 # installer prints instead of showing it, and the installer would not see a
 # console. The exit code travels in $script:HostLoadExitCode instead.
-function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
+function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here, [string[]]$SetupArgs) {
     $ErrorActionPreference = 'Stop'
     $rawBase = 'https://raw.githubusercontent.com/mrlunev/busybar-host-load/main'
     # setup\hostload_setup.py exits with this code when uv should go too.
     $removeUvExit = 10
+    # Oldest uv with everything the installer uses (remote scripts, --exclude-newer,
+    # a separate folder for downloaded Pythons).
+    $minUv = [version]'0.5.0'
+    # By full path: a powershell.exe planted in the current folder must not run instead.
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
     function Say([string]$text) { Write-Host "  $text" }
 
@@ -30,12 +39,23 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
     }
 
     function Find-Uv {
-        $cmd = Get-Command uv -ErrorAction SilentlyContinue
+        $cmd = Get-Command uv -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
         if ($cmd) { return $cmd.Source }
-        foreach ($candidate in @("$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe")) {
+        # Where uv's own installer puts it: UV_INSTALL_DIR, XDG_BIN_HOME, ~\.local\bin, ~\.cargo\bin.
+        $candidates = @()
+        if ($env:UV_INSTALL_DIR) { $candidates += Join-Path $env:UV_INSTALL_DIR 'uv.exe' }
+        if ($env:XDG_BIN_HOME) { $candidates += Join-Path $env:XDG_BIN_HOME 'uv.exe' }
+        $candidates += "$env:USERPROFILE\.local\bin\uv.exe", "$env:USERPROFILE\.cargo\bin\uv.exe"
+        foreach ($candidate in $candidates) {
             if (Test-Path $candidate) { return $candidate }
         }
         return $null
+    }
+
+    function Test-UvTooOld([string]$uv) {
+        $text = Invoke-Native { & $uv --version }
+        if ("$text" -match 'uv (\d+\.\d+\.\d+)') { return ([version]$Matches[1]) -lt $minUv }
+        return $true
     }
 
     function Remove-Uv([string]$uv) {
@@ -69,14 +89,25 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
         }
         Say 'Installing uv, a small tool that runs this installer (https://docs.astral.sh/uv/)...'
         $env:UV_NO_MODIFY_PATH = '1'
-        powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" | Out-Null
+        & $powershellExe -NoProfile -ExecutionPolicy Bypass -Command "irm https://astral.sh/uv/install.ps1 | iex" | Out-Null
         $uv = Find-Uv
         if (-not $uv) { throw 'uv could not be installed.' }
         Say 'uv is ready.'
         $env:HOSTLOAD_UV_INSTALLED = '1'
     }
+    if (Test-UvTooOld $uv) {
+        Say "The uv on this computer is older than $minUv; updating it..."
+        Invoke-Native { & $uv self update } | Out-Null
+        if (Test-UvTooOld $uv) {
+            Say "Could not update uv at $uv. Update it the way it was installed (for example"
+            Say "'winget upgrade astral-sh.uv' or 'scoop update uv'), then run this installer again."
+            $script:HostLoadExitCode = 1
+            return
+        }
+    }
     $env:HOSTLOAD_UV = $uv
-    # Run on a Python already on this computer when there is one; uv downloads one only if not.
+    # The installer itself runs on a Python already on this computer when there is one;
+    # uv downloads one only if not. (Glances gets a Python of its own either way.)
     $env:UV_PYTHON_PREFERENCE = 'system'
 
     Invoke-Native { & $uv python find '>=3.9' } | Out-Null
@@ -91,7 +122,7 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
     if (-not $script -or -not (Test-Path $script)) { $script = "$rawBase/setup/hostload_setup.py" }
 
     $action = if ($Uninstall) { 'uninstall' } else { 'install' }
-    & $uv run --quiet --no-project $script $action
+    & $uv run --quiet --no-project $script $action @SetupArgs
     $code = $LASTEXITCODE
     if ($code -eq $removeUvExit) {
         Remove-Uv $uv
@@ -101,6 +132,16 @@ function Invoke-HostLoadSetup([bool]$Uninstall, [string]$Here) {
 }
 
 $script:HostLoadExitCode = 1
-Invoke-HostLoadSetup -Uninstall:$Uninstall.IsPresent -Here $PSScriptRoot
+# Pasted into a console, the variables set here would stay in that console and
+# steer the next uv command typed there; they are put back afterwards.
+$savedEnv = @{}
+foreach ($name in 'HOSTLOAD_UV', 'HOSTLOAD_UV_INSTALLED', 'UV_PYTHON_PREFERENCE', 'UV_NO_MODIFY_PATH') {
+    $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+try {
+    Invoke-HostLoadSetup -Uninstall:$Uninstall.IsPresent -Here $PSScriptRoot -SetupArgs $SetupArgs
+} finally {
+    foreach ($name in $savedEnv.Keys) { [Environment]::SetEnvironmentVariable($name, $savedEnv[$name], 'Process') }
+}
 # Run as a file, report the result; pasted into a console, leave the window open.
 if ($PSCommandPath) { exit $script:HostLoadExitCode }

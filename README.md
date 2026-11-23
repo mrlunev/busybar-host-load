@@ -46,30 +46,48 @@ That is all. In a minute the graphs are on the bar.
 
 ### What the installer does
 
-1. Installs [uv](https://docs.astral.sh/uv/) if it is not there yet. Glances runs on the Python
-   already on your computer when it is version 3.10 to 3.14; only if there is none does uv download
-   Python 3.12 for it, so nothing has to be installed beforehand.
-2. Installs Glances 4 into its own environment and starts it at every login, serving **only CPU and
-   memory** on port 61208 — no process list, no disks, no network details.
+1. Installs [uv](https://docs.astral.sh/uv/) if it is not there yet (or updates one older than 0.5).
+   uv downloads Python 3.12 for Glances into the Host Load folder, so nothing has to be installed
+   beforehand, and no update or removal of another Python on the computer can stop Glances. Only if that
+   download fails does Glances run on a Python 3.10 to 3.14 already on the computer.
+2. Installs Glances 4.5.9 there, with its dependencies as they were on PyPI on 22 November 2026: a new
+   release of any of them does not change what gets installed. Glances serves **only CPU and memory** on
+   port 61208 — no process list, no disks, no network details. It starts now and at every login with the
+   same command, through `start-glances.py` in the Host Load folder, so a start that works during the
+   install also works after a restart. On Linux with systemd it also starts at boot when the system
+   allows that without a password (lingering), so a computer nobody logs in to keeps serving the bar.
 3. Opens port 61208 for your local network if the firewall needs it. Windows and macOS (only when its
-   firewall is on) ask for permission first. On Windows this happens before Glances first starts, so
-   the "Allow access?" prompt never appears; Block rules an earlier prompt left on that Python are
-   removed, because they would override the new rules.
+   firewall is on) ask for permission first, and only when the rules are not in place yet. On Windows
+   this happens before Glances first starts, so the "Allow access?" prompt never appears; Block rules an
+   earlier prompt left on that Python are removed, because they would override the new rules.
 4. Finds the bar: over USB, then on the network. With several bars around it asks which one.
 5. Installs the Host Load app on the bar, writes this computer's address into the app's settings,
    launches it, and checks the bar's screen to confirm the graphs are coming in. It tries the network
    address first when the computer and the bar share a network, and the USB link (`10.0.4.21`) when
    they do not, or when the first one gives no graphs.
 
-Running it again is safe: it updates Glances and the app and refreshes the address. Do that if your
-computer gets a new IP address.
+Running it again is safe: it builds a fresh Glances next to the running one and swaps them only when
+the new one is complete, updates the app and refreshes the address. Do that if your computer gets a new
+IP address. If you installed Host Load 1.0.0 or 1.0.1 on Windows, run it again: there Glances did not
+start after a restart, and the bar showed `NO GLANCES`.
+
+Options, after `bash -s --` for the piped command, or after the script name:
+
+| Option | What it does |
+| --- | --- |
+| `--bar ADDRESS` | Install on this bar instead of looking for one. |
+| `--package FILE` | Install this app package instead of the latest release. |
+| `--no-firewall` | Leave the firewall as it is, for computers whose firewall is managed elsewhere. |
+
+The installer also runs without a terminal (from an agent or a script): it then takes the first bar it
+finds and cannot ask for a bar's HTTP API password.
 
 What it adds to your computer, and nothing else:
 
 | | macOS | Windows | Linux |
 | --- | --- | --- | --- |
-| Glances and its log | `~/Library/Application Support/busybar-host-load` | `%LOCALAPPDATA%\busybar-host-load` | `~/.local/share/busybar-host-load` |
-| Start at login | `~/Library/LaunchAgents/com.github.mrlunev.busybar-host-load.plist` | Registry: `HKCU\...\Run\BUSY Bar Host Load` | `~/.config/systemd/user/busybar-host-load.service` |
+| Glances, its Python, logs | `~/Library/Application Support/busybar-host-load` | `%LOCALAPPDATA%\busybar-host-load` | `~/.local/share/busybar-host-load` |
+| Start at login | `~/Library/LaunchAgents/com.github.mrlunev.busybar-host-load.plist` | Registry: `HKCU\...\Run\BUSY Bar Host Load` | `~/.config/systemd/user/busybar-host-load.service`, and lingering if it was off; without systemd, `~/.config/autostart/busybar-host-load.desktop` |
 | Firewall | python allowed, if the firewall is on | Rules "BUSY Bar Host Load (Glances)": TCP 61208, local subnet, for the port and for the Python running Glances | Nothing; a hint is printed if `ufw` is installed |
 
 ## Settings
@@ -80,13 +98,13 @@ Open the bar's web interface — `http://10.0.4.20` over USB, or the bar's IP ad
 | Setting | What it does |
 | --- | --- |
 | **Computer address** | IP address of the computer running Glances; `10.0.4.21` means "over the USB cable". The installer fills it in. Add `:port` if Glances does not use 61208. |
-| **Update every** | 2, 5, 10 or 30 seconds. The graph holds 36 samples, so this is also how much history you see: from about a minute to 18 minutes. |
+| **Update every** | 0.5, 1, 2, 5, 10 or 30 seconds; 2 by default. The graph holds 36 samples, so this is also how much history you see: from 18 seconds to 18 minutes. |
 
 Changes apply within ten seconds, without restarting the app. A short press of **Back** on the bar
 quits the app; start it again from the bar's Apps menu or with **Start** in the web interface.
 
-Why 2 seconds at most: Glances refreshes its REST API about every two seconds, so sampling faster would
-only repeat values.
+The installer starts Glances refreshing every 0.5 s, its API and CPU caches shortened to match, so
+every sample is fresh. A Glances you run yourself keeps its own caches: below 2 seconds it repeats values.
 
 ## When something is off
 
@@ -94,10 +112,12 @@ only repeat values.
 | --- | --- |
 | `SET ADDRESS` / `IN SETTINGS` | The app has no computer address. Run the installer, or type the address in the settings. |
 | `NO GLANCES` and an address | The bar cannot reach Glances at that address. Check that the computer is awake, that the address is still right (re-run the installer if the IP changed), and that the firewall allows port 61208. If the computer and the bar are on different networks, plug the bar in by USB and run the installer again: it switches to the cable. The app keeps retrying and recovers by itself. |
+| `NO GLANCES` after a restart | Check that the login item is on: **System Settings → General → Login Items** on macOS, **Task Manager → Startup apps** on Windows. Glances writes what went wrong to `logs/output.log` in the Host Load folder (table above). Running the installer again repairs the rest. |
 
-The installer stops with a message instead of guessing when the bar is on old firmware, is not on Wi-Fi,
-or is protected with an HTTP API password (it asks for it). To install over Wi-Fi without a cable, HTTP
-API access over Wi-Fi must be on: **Network → HTTP API** in the bar's web interface.
+The installer stops with a message instead of guessing when the bar is on old firmware, when another
+program holds port 61208 (it names the program), or when the bar is protected with an HTTP API password
+and there is no terminal to type it in (in a terminal it asks). To install over Wi-Fi without a cable,
+HTTP API access over Wi-Fi must be on: **Network → HTTP API** in the bar's web interface.
 
 ## Uninstall
 
@@ -112,9 +132,10 @@ curl -fsSL https://raw.githubusercontent.com/mrlunev/busybar-host-load/main/inst
 & ([scriptblock]::Create((irm https://raw.githubusercontent.com/mrlunev/busybar-host-load/main/install.ps1))) -Uninstall
 ```
 
-It removes the app from the bar, stops Glances, removes the login item, the firewall rule and the data
-folder. If the installer was the one that installed uv, it offers to remove uv too, with the Python
-versions and cache uv downloaded. A uv you had before stays.
+It removes the app from the bar, stops Glances, removes the login item (and lingering, if the installer
+turned it on), the firewall rules and the Host Load folder with Glances' Python and logs. If the
+installer was the one that installed uv, it offers to remove uv too, with the Python versions and cache
+uv downloaded. A uv you had before stays.
 
 ## Manual setup
 
