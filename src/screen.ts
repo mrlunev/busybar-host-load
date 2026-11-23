@@ -9,6 +9,7 @@
 import type { DisplayDrawParams } from "@busy-app/busy-lib";
 
 import { graphXpm } from "./graph";
+import type { HelpElement } from "./help";
 import {
   CPU_THEME,
   GRAPH_TOP,
@@ -141,9 +142,14 @@ function last(history: readonly number[]): number {
 
 /**
  * Shown while there is nothing to graph: no address configured, or Glances not
- * answering. Two short centred lines, because 72x16 fits little else.
+ * answering. Two short centred lines on the front, because 72x16 fits little
+ * else; `help` puts what to do about it on the back.
  */
-export function messageFrame(top: string, bottom: string): Frame {
+export function messageFrame(
+  top: string,
+  bottom: string,
+  help: readonly HelpElement[],
+): Frame {
   const middle = SCREEN_W / 2;
   // The font's 2 px top bearing again: these anchors put the ink on rows 2..6 and 9..13.
   const elements: Element[] = [
@@ -180,6 +186,7 @@ export function messageFrame(top: string, bottom: string): Frame {
           }
         : {}),
     },
+    ...help,
   ];
 
   return { elements, ids: elements.map((e) => e.id) };

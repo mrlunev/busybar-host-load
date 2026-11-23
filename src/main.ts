@@ -10,6 +10,7 @@ import { device } from "@shared/device";
 import manifest from "./appmeta/manifest.json";
 import { type Config, EMPTY_CONFIG, readConfig, sameConfig } from "./config";
 import { readLoad } from "./glances";
+import { type Message, type WebAddress, USB_ADDRESS, helpElements } from "./help";
 import { HISTORY } from "./layout";
 import { type Frame, loadFrame, messageFrame } from "./screen";
 
@@ -31,6 +32,38 @@ const GIVE_UP_AFTER = 3;
 /** Retries back off after failures, but never wait longer than this between tries. */
 const MAX_RETRY_MS = 15000;
 
+/** While help is up, look again at where the bar's web page opens: Wi-Fi may join, a cable come. */
+const HELP_REFRESH_MS = 30000;
+
+/** The bar's own API, for the help's addresses. */
+const API = `http://${__BUSY_ADDR__}/api`;
+
+async function getJson<T>(path: string): Promise<T | null> {
+  try {
+    const response = await fetch(`${API}/${path}`);
+    return response.ok ? ((await response.json()) as T) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the bar's web page opens: Wi-Fi when its API is open there without a password; USB when the port has power. */
+async function webAddresses(): Promise<WebAddress[]> {
+  const [wifi, access, power] = await Promise.all([
+    getJson<{ state?: string; ip_config?: { address?: string } }>("wifi/status"),
+    getJson<{ mode?: string }>("access"),
+    getJson<{ usb_voltage?: number }>("status/power"),
+  ]);
+  const out: WebAddress[] = [];
+  const wifiAddress = wifi?.ip_config?.address;
+  if (wifi?.state === "connected" && wifiAddress && access?.mode === "enabled") {
+    out.push({ how: "Wi-Fi", address: wifiAddress });
+  }
+  // A charger cannot be told from a computer's port.
+  if ((power?.usb_voltage ?? 0) > 4000) out.push({ how: "USB", address: USB_ADDRESS });
+  return out;
+}
+
 /** Appends a sample and drops the one that just scrolled off the left edge. */
 function push(history: number[], value: number): void {
   history.push(value);
@@ -49,6 +82,8 @@ function main(): void {
   let failures = 0;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let addresses: WebAddress[] = [];
+  let addressesAt = -HELP_REFRESH_MS;
 
   const report = (where: string, err: unknown) =>
     console.error(
@@ -84,6 +119,16 @@ function main(): void {
     onScreen = next;
   }
 
+  /** The back display's help for `state`, with the bar's addresses looked up at most every HELP_REFRESH_MS. */
+  async function help(state: Message) {
+    const now = Date.now();
+    if (now - addressesAt >= HELP_REFRESH_MS) {
+      addressesAt = now;
+      addresses = await webAddresses();
+    }
+    return helpElements(state, addresses);
+  }
+
   /** Re-reads the settings when they are due; a new address starts a fresh graph. */
   async function refreshConfig(): Promise<void> {
     const now = Date.now();
@@ -111,7 +156,7 @@ function main(): void {
 
       if (config.host === "") {
         resetHistory();
-        await show(messageFrame("SET ADDRESS", "IN SETTINGS"));
+        await show(messageFrame("SET ADDRESS", "IN SETTINGS", await help("setup")));
         return;
       }
 
@@ -120,6 +165,8 @@ function main(): void {
         push(cpuHistory, load.cpu);
         push(ramHistory, load.ram);
         failures = 0;
+        // The next help looks up the addresses afresh: the bar may have moved since.
+        addressesAt = -HELP_REFRESH_MS;
       } catch (err) {
         if (failures === 0) report("glances", err);
         failures += 1;
@@ -129,7 +176,7 @@ function main(): void {
         if (failures < GIVE_UP_AFTER && cpuHistory.length > 0) return;
         // Glances is really gone: the gap is shown as a fresh start, not stitched over.
         resetHistory();
-        await show(messageFrame("NO GLANCES", config.host));
+        await show(messageFrame("NO GLANCES", config.host, await help("noglances")));
         // A wrong address is the usual cause, so pick up corrected settings on the next try.
         configReadAt = -SETTINGS_REFRESH_MS;
         return;

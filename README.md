@@ -99,6 +99,7 @@ Open the bar's web interface — `http://10.0.4.20` over USB, or the bar's IP ad
 | --- | --- |
 | **Computer address** | IP address of the computer running Glances; `10.0.4.21` means "over the USB cable". The installer fills it in. Add `:port` if Glances does not use 61208. |
 | **Update every** | 0.5, 1, 2, 5, 10 or 30 seconds; 2 by default. The graph holds 36 samples, so this is also how much history you see: from 18 seconds to 18 minutes. |
+| **Install** | The installer commands for Mac or Linux and for Windows, to copy from the bar's web page. |
 
 Changes apply within ten seconds, without restarting the app. A short press of **Back** on the bar
 quits the app; start it again from the bar's Apps menu or with **Start** in the web interface.
@@ -107,6 +108,10 @@ The installer starts Glances refreshing every 0.5 s, its API and CPU caches shor
 every sample is fresh. A Glances you run yourself keeps its own caches: below 2 seconds it repeats values.
 
 ## When something is off
+
+The front shows a short signal; the back screen says what is wrong and where to open the bar's web
+page: its Wi-Fi address when the HTTP API is on there, and `10.0.4.20` when a computer's USB port powers the bar. There,
+**Apps → Host Load → Install** has the installer commands.
 
 | The bar shows | What to do |
 | --- | --- |

@@ -89,6 +89,8 @@ When in doubt, choose the cheaper option: a slower refresh, fewer requests, less
 - `listen("input", handler)` delivers `ok`, `start` and `back` with a `press`, `release`, `short`, `long` or `repeat` action, and `encoder` with a direction and a `delta` of `1` or `-1`. It returns an unbind function.
 - **Use `short` as the default button action, not `press`.** `short` fires once, after a normal press and release; `press` fires immediately on key down and is followed by `short` on release, so treating `press` as a tap reacts before the gesture is complete and can double-fire. Use `long` and `repeat` for hold gestures, and `press`/`release` only when the down and up edges matter.
 - Settings are described in `src/appmeta/settings.json`. Read them with `loadValues()` from `@shared/settings` and fall back to the defaults in code when it returns `null`; persist with `saveValues()`. Do not put secrets in settings files.
+- **Do not raise `version` in `settings.json`.** The firmware discards every stored value when it changes (there are no migrations for JS apps): people updating would lose the computer address the installer wrote. New fields are added under the same version; a fresh install gets their defaults, an update shows them empty until the settings are reset or saved.
+- While the front shows SET ADDRESS or NO GLANCES, the back shows what to do (`src/help.ts`, after Net Traffic): the bar's web addresses over Wi-Fi and USB, then **Apps → Host Load → Install**. The help elements are part of the message frame, so going back to the graph clears them.
 
 ## Code rules
 
@@ -120,6 +122,7 @@ State on 2026-11-23, for the next agent:
 
 - Released: 1.0.1 on GitHub (`e1bee66`). Pushed but not released yet: `cb55368`. It fixes Glances not starting after a Windows restart: every start, at install and at login, goes through the `start-glances.py` launcher with a supervisor. It also pins Glances to 4.5.9 and adds update steps of 0.5 s and 1 s (Glances with `--time 0.5 --cached-time 0` and a 0.5 s CPU cache).
 - Checked on the self-built test bar (U5, firmware 1.4.1), plugged by USB into the Windows test PC: graphs at 2 s and 0.5 s, autostart through a simulated login, two full installer runs. macOS and Linux were checked by the installer session; the stock bar was not used.
-- Left before the catalog: the release, the catalog pull request. `catalog.json` and `screenshots/` are written; once they are committed, `busy-emulator check` passes all it can check here (52 of 66 before the commit).
+- Not released yet: the install group in the settings and the back-screen help (23.11). Checked on a test bar (1.4.1, by USB): Not set up yet; and in the emulator: No answer from Glances, and back to the graph. The stock bar was not connected.
+- Left before the catalog: the release, the catalog pull request. `catalog.json` and `screenshots/` are committed; `busy-emulator check` has no failures.
 - Decisions for the owner: the version for the catalog (the repo is at 1.0.1, the rule is 0.1.0 until published); the default step (2 s now, 0.5 s available); whether to keep `BusyBar` from busy-lib in `shared/device.ts` (its 3 s `AbortController` timeout throws on the device; other apps use a thin `fetch` client).
 - The test bar has `refresh` set to 0.5 s; set it back to 2 s if that matters.

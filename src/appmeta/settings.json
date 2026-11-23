@@ -22,6 +22,27 @@
         { "value": "10", "label": "10 seconds (graph shows 6 min)" },
         { "value": "30", "label": "30 seconds (graph shows 18 min)" }
       ]
+    },
+    "install": {
+      "type": "group",
+      "label": "Install",
+      "description": "Run the installer on the computer: it sets up Glances and fills in the address. Guide: github.com/mrlunev/busybar-host-load",
+      "fields": {
+        "mac": {
+          "type": "string",
+          "label": "Install on Mac or Linux",
+          "description": "Paste into Terminal.",
+          "default": "curl -fsSL https://raw.githubusercontent.com/mrlunev/busybar-host-load/main/install.sh | bash",
+          "max_length": 255
+        },
+        "windows": {
+          "type": "string",
+          "label": "Install on Windows",
+          "description": "Paste into PowerShell.",
+          "default": "irm https://raw.githubusercontent.com/mrlunev/busybar-host-load/main/install.ps1 | iex",
+          "max_length": 255
+        }
+      }
     }
   }
 }
