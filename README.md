@@ -115,8 +115,8 @@ page: its Wi-Fi address when the HTTP API is on there, and `10.0.4.20` when a co
 
 | The bar shows | What to do |
 | --- | --- |
-| `SET ADDRESS` / `IN SETTINGS` | The app has no computer address. Run the installer, or type the address in the settings. |
-| `NO GLANCES` and an address | The bar cannot reach Glances at that address. Check that the computer is awake, that the address is still right (re-run the installer if the IP changed), and that the firewall allows port 61208. If the computer and the bar are on different networks, plug the bar in by USB and run the installer again: it switches to the cable. The app keeps retrying and recovers by itself. |
+| `SET ADDRESS` / `SEE BACK SCREEN` | The app has no computer address. Run the installer, or type the address in the settings. |
+| `NO GLANCES` / `SEE BACK SCREEN` | The bar cannot reach Glances at the computer address in the settings. Check that the computer is awake, that the address is still right (re-run the installer if the IP changed), and that the firewall allows port 61208. If the computer and the bar are on different networks, plug the bar in by USB and run the installer again: it switches to the cable. The app keeps retrying and recovers by itself. |
 | `NO GLANCES` after a restart | Check that the login item is on: **System Settings → General → Login Items** on macOS, **Task Manager → Startup apps** on Windows. Glances writes what went wrong to `logs/output.log` in the Host Load folder (table above). Running the installer again repairs the rest. |
 
 The installer stops with a message instead of guessing when the bar is on old firmware, when another

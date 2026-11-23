@@ -35,6 +35,9 @@ const MAX_RETRY_MS = 15000;
 /** While help is up, look again at where the bar's web page opens: Wi-Fi may join, a cable come. */
 const HELP_REFRESH_MS = 30000;
 
+/** The front's second line while help is up: what to do is on the back. */
+const SEE_BACK = "SEE BACK SCREEN";
+
 /** The bar's own API, for the help's addresses. */
 const API = `http://${__BUSY_ADDR__}/api`;
 
@@ -156,7 +159,7 @@ function main(): void {
 
       if (config.host === "") {
         resetHistory();
-        await show(messageFrame("SET ADDRESS", "IN SETTINGS", await help("setup")));
+        await show(messageFrame("SET ADDRESS", SEE_BACK, await help("setup")));
         return;
       }
 
@@ -176,7 +179,7 @@ function main(): void {
         if (failures < GIVE_UP_AFTER && cpuHistory.length > 0) return;
         // Glances is really gone: the gap is shown as a fresh start, not stitched over.
         resetHistory();
-        await show(messageFrame("NO GLANCES", config.host, await help("noglances")));
+        await show(messageFrame("NO GLANCES", SEE_BACK, await help("noglances")));
         // A wrong address is the usual cause, so pick up corrected settings on the next try.
         configReadAt = -SETTINGS_REFRESH_MS;
         return;
