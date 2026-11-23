@@ -6,7 +6,10 @@ Live CPU and RAM graphs of your computer on the front screen of a [BUSY Bar](htt
 
 CPU on the left, RAM on the right. Each half shows the current value and a graph that scrolls right
 to left, one column per sample. The numbers come from [Glances](https://nicolargo.github.io/glances/),
-running on your computer, which the bar reads over Wi-Fi.
+running on your computer, which the bar reads over Wi-Fi or the USB cable.
+
+The app on the bar is only half of it: it needs Glances on the computer. The installer below sets up
+both. If you took Host Load from the BUSY Apps catalog, the bar shows `SET ADDRESS` until you run it.
 
 ## Install
 
@@ -115,7 +118,7 @@ page: its Wi-Fi address when the HTTP API is on there, and `10.0.4.20` when a co
 
 | The bar shows | What to do |
 | --- | --- |
-| `SET ADDRESS` / `SEE BACK SCREEN` | The app has no computer address. Run the installer, or type the address in the settings. |
+| `SET ADDRESS` / `SEE BACK SCREEN` | The app has no computer address, for example after an install from the BUSY Apps catalog. Run the installer, or type the address in the settings. |
 | `NO GLANCES` / `SEE BACK SCREEN` | The bar cannot reach Glances at the computer address in the settings. Check that the computer is awake, that the address is still right (re-run the installer if the IP changed), and that the firewall allows port 61208. If the computer and the bar are on different networks, plug the bar in by USB and run the installer again: it switches to the cable. The app keeps retrying and recovers by itself. |
 | `NO GLANCES` after a restart | Check that the login item is on: **System Settings → General → Login Items** on macOS, **Task Manager → Startup apps** on Windows. Glances writes what went wrong to `logs/output.log` in the Host Load folder (table above). Running the installer again repairs the rest. |
 
@@ -173,6 +176,11 @@ The front display is 72×16 pixels, split into two 36-pixel halves laid out the 
 left corner, the value in the right corner, both 1 px from the half's edges on rows 0–4, and the graph
 below. 100% is row 6 and 0% is the bottom row, so the graph never touches the text.
 
+While there is nothing to graph, the front shows two short lines (`SET ADDRESS` or `NO GLANCES`, then
+`SEE BACK SCREEN`) and the back screen, 148×80 next to the firmware's status bar, shows what to do: the
+bar's web addresses over Wi-Fi and USB, then **Apps → Host Load**. When the graph comes back, those
+elements are cleared.
+
 The firmware's draw API has no line primitive, so each graph is an `xpmbitmap` built pixel by pixel: a
 1 px line with vertical segments bridging jumps between neighbouring samples, a filled area underneath,
 and transparent pixels elsewhere so the half's background shows through. XPM2 allows 32 colours; a
@@ -213,6 +221,7 @@ discovery and the package.
 | `src/glances.ts` | Glances client: `GET /api/4/cpu` → `total`, `GET /api/4/mem` → `percent`. |
 | `src/graph.ts` | Renders one half's graph as XPM2. |
 | `src/screen.ts` | Display elements for the graphs and for the message screen. |
+| `src/help.ts` | Back-screen help while the app is not set up or Glances does not answer. |
 | `src/layout.ts` | Screen geometry and palette. |
 | `src/appmeta/` | Manifest, settings schema, icons. |
 | `install.sh`, `install.ps1` | Installer launchers: make sure uv is there, then run the setup script. |
@@ -223,4 +232,5 @@ Releases are built by GitHub Actions: push a tag equal to the version in `src/ap
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). Glances is developed by Nicolas Hennion and its contributors; this app is not affiliated
+with the Glances project.
