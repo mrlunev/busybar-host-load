@@ -113,3 +113,13 @@ Run `npm run typecheck` and `npm run build`, then check:
 - [ ] Requests are infrequent and do not pile up; failures back off instead of retrying in a tight loop.
 - [ ] Frames send only changed elements and are redrawn only when something visible changes.
 - [ ] `src/appmeta/manifest.json` has a valid `id`, `name` and semver `version`, and `api_version` is no higher than needed.
+
+## Handover
+
+State on 2026-11-23, for the next agent:
+
+- Released: 1.0.1 on GitHub (`e1bee66`). Not pushed or released yet: `cb55368`. It fixes Glances not starting after a Windows restart: every start, at install and at login, goes through the `start-glances.py` launcher with a supervisor. It also pins Glances to 4.5.9 and adds update steps of 0.5 s and 1 s (Glances with `--time 0.5 --cached-time 0` and a 0.5 s CPU cache).
+- Checked on the self-built test bar (U5, firmware 1.4.1), plugged by USB into the Windows test PC: graphs at 2 s and 0.5 s, autostart through a simulated login, two full installer runs. macOS and Linux were checked by the installer session; the stock bar was not used.
+- Left before the catalog: push and release, the catalog manifest and screenshots, the catalog pull request.
+- Decisions for the owner: the version for the catalog (the repo is at 1.0.1, the rule is 0.1.0 until published); the default step (2 s now, 0.5 s available); whether to keep `BusyBar` from busy-lib in `shared/device.ts` (its 3 s `AbortController` timeout throws on the device; other apps use a thin `fetch` client).
+- The test bar has `refresh` set to 0.5 s; set it back to 2 s if that matters.
